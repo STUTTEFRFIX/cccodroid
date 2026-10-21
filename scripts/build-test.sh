@@ -18,7 +18,7 @@ W=${WORK:-$F/home/.work/cccodroid-test}
 
 echo "▸ 源码副本 → $W"
 rm -rf "$W"; mkdir -p "$W"
-cp -RL "$ROOT/android" "$ROOT/gateway" "$ROOT/scripts" "$W/"
+cp -RL "$ROOT/android" "$ROOT/gateway" "$ROOT/scripts" "$ROOT/third_party" "$W/"
 cp "$ROOT/devkit-sources.txt" "$ROOT/devkit-pin.json" "$W/"
 rm -rf "$W/android/build" "$W/android/assets/app"
 node "$ROOT/scripts/mktest.mjs" "$W"

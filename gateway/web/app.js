@@ -1958,6 +1958,8 @@ if (/[?&]t=/.test(location.search)) history.replaceState(null, "", location.path
     scrollDown(true);
   }
   const isBusy = () => !!srv.run && !srv.run.idle;
+  /** 并行上限真的满了（不算只剩后台任务的空闲轮次） */
+  const atCap = () => srv.runs.filter((r) => !r.idle).length >= (srv.max || 3);
 
   /** 并行多会话：从网关的全部轮次和队列里挑出属于当前视图的 */
   function runInView(r) {
@@ -1990,7 +1992,9 @@ if (/[?&]t=/.test(location.search)) history.replaceState(null, "", location.path
             ? t("上一轮被系统中断，{n} 条排队的消息已挂起，不会自动发出 · 点 ⚡ 发出", { n: q.filter((it) => it.held).length })
             : t("点了停止，{n} 条已挂起，不会自动发出 · 点 ⚡ 发出", { n: q.filter((it) => it.held).length })
           : busy ? t("待发 {n} 条 · 当前这一轮结束后依次发出", { n: q.length })
-          : t("同时在跑的会话已到上限（{max} 个），有空位就依次发出 · 待发 {n} 条", { max: srv.max, n: q.length })}</span>
+          // 真到并行上限才这么说；否则是这个会话上一轮还挂着（等后台任务 / 收尾），别让人以为开了好几个会话
+          : atCap() ? t("同时在跑的会话已到上限（{max} 个），有空位就依次发出 · 待发 {n} 条", { max: srv.max, n: q.length })
+          : t("待发 {n} 条 · 这个会话的上一轮还没完全结束（后台任务在跑或正在收尾），结束后依次发出", { n: q.length })}</span>
         <button class="q-clear">${t("全部清除")}</button>
       </div>
       ${q.map((it) => `
@@ -2083,7 +2087,7 @@ if (/[?&]t=/.test(location.search)) history.replaceState(null, "", location.path
       view.lastRunId = r.id;
       if (r.injected) toast(t("已插话：当前这一步做完，Claude 就会看到"));
       else if (!r.started) toast(mode === "inject" ? t("这一轮正在收尾，插不进去 —— 已排到最前，马上发出")
-        : srv.run ? t("已排队，这一轮结束后发出") : t("同时在跑的会话已到上限，已排队，有空位就发出"));
+        : srv.run && !srv.run.idle ? t("已排队，这一轮结束后发出") : atCap() ? t("同时在跑的会话已到上限，已排队，有空位就发出") : t("已排队：这个会话的上一轮还没完全结束，结束后发出"));
     } catch (e) {
       view.cids.delete(cid);
       if (fromInput && !inputEl.value) { inputEl.value = typed; autoGrow(); }   // 别把用户的话吞了
@@ -2887,7 +2891,7 @@ if (/[?&]t=/.test(location.search)) history.replaceState(null, "", location.path
       ${desc || ""}
       ${acts ? `<div class="it-acts">${acts}</div>` : ""}</div>`;
 
-  // ── 工具包模块（0.4.0 起）：基础 + 随装随卸的模块；用途、命令、包、大小、依赖、谁在用都摆出来 ──
+  // ── 工具包模块（0.3.9 起）：基础 + 随装随卸的模块；用途、命令、包、大小、依赖、谁在用都摆出来 ──
   let modTimer = 0;
   const MOD_USES = () => ({
     claude: t("Claude Code 本身"), git: t("git 面板"), terminal: t("终端"), shizuku: t("Shizuku 一键启动（无线调试）"), search: t("Claude 搜代码、看差异"),
@@ -4502,13 +4506,13 @@ if (/[?&]t=/.test(location.search)) history.replaceState(null, "", location.path
       return;
     }
     if (act === "verify" || act === "repair") {
-      if (act === "repair" && !confirm(t("修复开发工具包？\n\n会重新下载当前这一版（约 600 MB，断点续传）并重装，装的时候暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。"))) return;
+      if (act === "repair" && !confirm(t("修复开发工具包？\n\n会重新下载当前这一版你装着的部分（断点续传）并重装，装的时候暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。"))) return;
       const r = await post(act === "verify" ? "/api/app/upd_verify" : "/api/app/upd_repair", { full: true }).catch((e2) => ({ ok: false, message: e2.message }));
       toast(r.message || (r.ok ? t("开始") : t("失败")), !r.ok);
       followUpd(); setTimeout(loadUpd, 500);
       return;
     }
-    if (item === "devkit" && !confirm(t("更新开发工具包？\n\n下载约 600 MB（断点续传），装的时候会暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。"))) return;
+    if (item === "devkit" && !confirm(t("更新开发工具包？\n\n要下多少见这一项旁边标的大小（断点续传），装的时候会暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。"))) return;
     const r = await post("/api/app/upd_apply", { item }).catch((e2) => ({ ok: false, message: e2.message }));
     toast(r.message || (r.ok ? t("开始") : t("失败")), !r.ok);
     followUpd(); setTimeout(loadUpd, 500);

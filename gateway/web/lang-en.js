@@ -227,7 +227,7 @@ window.I18N_DICT.en = {
   "检查更新": "Check for updates",
   "CLI：stable": "CLI: stable",
   "CLI：latest": "CLI: latest",
-  "更新开发工具包？\n\n下载约 600 MB（断点续传），装的时候会暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。": "Update the development kit?\n\nAbout 600 MB to download (resumable); installing pauses the service for 1–2 minutes.\nAnything you installed into the kit with pip / npm -g is kept.",
+  "更新开发工具包？\n\n要下多少见这一项旁边标的大小（断点续传），装的时候会暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。": "Update the development kit?\n\nThe download size is shown next to this item (resumable); installing pauses the service for 1–2 minutes.\nAnything you installed into the kit with pip / npm -g is kept.",
   "开始": "Started",
   "自动更新（默认开）：Claude Code 静默更新；新版应用下载好后提醒安装（有 Shizuku 时空闲自动装）；开发工具包只在 Wi‑Fi 下预先下载，下次打开应用时装上": "Auto-update (on by default): Claude Code updates silently; a new app version downloads and then prompts you to install (installed automatically when idle if Shizuku is available); the development kit is only pre-downloaded on Wi-Fi and installed the next time you open the app",
   "开启后台保活增强？\n\n会改几项系统设置：幽灵进程上限（影响所有应用）、本应用的电池白名单与后台运行限制。关掉开关会恢复前两项。": "Enable the keep-alive boost?\n\nThis changes a few system settings: the phantom-process limit (affects all apps), and this app's battery whitelist and background-run limits. Turning the switch off restores the first two.",
@@ -366,7 +366,7 @@ window.I18N_DICT.en = {
   "已损坏": "Damaged",
   "修复": "Repair",
   "校验": "Verify",
-  "修复开发工具包？\n\n会重新下载当前这一版（约 600 MB，断点续传）并重装，装的时候暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。": "Repair the development kit?\n\nThe current version will be downloaded again (about 600 MB, resumable) and reinstalled; the service pauses for 1–2 minutes while it installs.\nAnything you installed into the development kit with pip / npm -g is kept.",
+  "修复开发工具包？\n\n会重新下载当前这一版你装着的部分（断点续传）并重装，装的时候暂停服务 1–2 分钟。\n你用 pip / npm -g 装进工具包的东西会被保留。": "Repair the development kit?\n\nThe parts of the current version you have installed will be downloaded again (resumable) and reinstalled; the service pauses for 1–2 minutes while it installs.\nAnything you installed into the development kit with pip / npm -g is kept.",
   "取消选择": "Cancel selection",
   "选择": "Select",
   "返回会话": "Back to sessions",
@@ -1418,7 +1418,7 @@ window.I18N_DICT.en = {
   "求索 · 跟随系统": "Seeker · Follow system",
   "求索 · 浅色": "Seeker · Light",
   "求索 · 深色": "Seeker · Dark",
-  // ── 工具包模块（0.4.0）
+  // ── 工具包模块（0.3.9）
   "Claude Code 本身": "Claude Code itself",
   "git 面板": "Git panel",
   "Shizuku 一键启动（无线调试）": "One-tap Shizuku start (wireless debugging)",
@@ -1456,6 +1456,9 @@ window.I18N_DICT.en = {
   "有模块正在安装，等它结束再试": "A module is being installed; try again when it finishes",
   "工具包模块": "Toolkit modules",
   "开发工具包按用途拆成模块，用得上的才装。基础模块必装；共享运行库跟着用它的模块自动装卸。": "The developer toolkit is split into modules by purpose — install only what you need. The base module is required; shared libraries are installed and removed automatically with the modules that use them.",
-  // ── 工具包模块（0.4.0）
+  // ── 工具包模块（0.3.9）
   "主要命令：": "Main commands:",
+  // ── 排队提示：没到并行上限时如实说是这个会话上一轮还没结束（0.3.10）
+  "待发 {n} 条 · 这个会话的上一轮还没完全结束（后台任务在跑或正在收尾），结束后依次发出": "{n} waiting · this conversation's previous turn hasn't fully finished (background tasks running or wrapping up); they'll go out after it ends",
+  "已排队：这个会话的上一轮还没完全结束，结束后发出": "Queued: this conversation's previous turn hasn't fully finished; it will go out after that",
 };

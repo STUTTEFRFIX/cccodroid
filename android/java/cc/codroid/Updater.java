@@ -27,7 +27,7 @@ import org.json.JSONObject;
  *   Claude Code：装进新的版本目录再切 current 指针 —— 正在跑的 claude 用的还是旧文件，不受影响，所以全程静默。
  *                （它自带的自动更新被 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 关了，而且也不认我们的目录布局。）
  *   APK：下载、核对签名与本应用一致。有 Shizuku 且空闲、界面不在前台时静默装；否则发通知，点一下走系统安装确认。
- *   工具包：约 600 MB，会替换整个 $PREFIX。自动模式只在不计流量的网络上预先下载；
+ *   工具包：按已装的模块下（0.3.8 及以前的整包约 650 MB，升上来时装全部模块），会替换整个 $PREFIX。自动模式只在不计流量的网络上预先下载；
  *           下次冷启动且没有任务在跑时替换（或用户在设置页点"安装"）。用户自装进 $PREFIX 的东西会搬过去。
  *
  * 版本来源：GitHub Releases（v* 是 APK，devkit-* 是工具包）；Claude Code 走官方 downloads.claude.ai。
@@ -69,7 +69,7 @@ final class Updater {
         volatile String url, alt, sha, base, tarSha;
         volatile long size, need;
         volatile File file;
-        // 模块化工具包（0.4.0 起）：modules.json 原文、它的 sha256、要装的模块。file 指向落盘的 modules.json（全部块下完才写，等于「已下好」的记号）
+        // 模块化工具包（0.3.9 起）：modules.json 原文、它的 sha256、要装的模块。file 指向落盘的 modules.json（全部块下完才写，等于「已下好」的记号）
         volatile byte[] modules;
         volatile String modSha;
         volatile java.util.List<String> moduleIds;
@@ -360,11 +360,15 @@ final class Updater {
 
     /**
      * 这个 Release 有 modules.json（模块化）就改成按块装：要装哪些 = 现在已装的那些（整包用户 = 全部模块，一样不少）；
-     * 下载量 / 占用按这些块重算。取不到 modules.json 就照旧装整包。modules.json 走 GitHub HTTPS，和 devkit.lock.json 同一来源
+     * 下载量 / 占用按这些块重算。取不到 modules.json 就照旧装整包。
+     * modules.json 要带签名（modules.json.sig，和组件索引同一把 ed25519 钥匙）：里面有每块的 sha256，签名对不上就不信它，退回整包。
+     * 首装不走这里 —— 那时 modules.json 按 APK 钉的 sha256 核
      */
     private void planModules(String base) {
         try {
             byte[] b = Installer.httpGetSmall(base + "modules.json");
+            String sig = new String(Installer.httpGetSmall(base + "modules.json.sig"), StandardCharsets.UTF_8);
+            if (!Ed25519.verifyIndex(b, sig)) { Log.w(TAG, "planModules: modules.json 签名对不上，按整包装"); return; }
             JSONObject mj = new JSONObject(new String(b, StandardCharsets.UTF_8));
             if (!ctx.getPackageName().equals(mj.optString("target")) || mj.optInt("compat", 1) != DEVKIT_COMPAT) return;
             java.util.List<String> ids = installedModuleIds(mj);

@@ -55,6 +55,7 @@ import { TERMS, routeTerminal } from "./gw/terminal.mjs";
 import { routeGit } from "./gw/git.mjs";
 import { routeComponents } from "./gw/components.mjs";
 import { routeModules } from "./gw/modules.mjs";
+import { cleanOrphans, routeOrphans } from "./gw/orphans.mjs";
 import { customRefresh, routeCustom } from "./gw/custom.mjs";
 import { routeBus } from "./gw/bus.mjs";
 import { routeQueue } from "./gw/queue.mjs";
@@ -69,7 +70,7 @@ import { routeExtensions } from "./gw/extensions.mjs";
 import { COOKIE, TOKEN, denyLog, denyReason, tokenOk } from "./gw/access.mjs";
 
 // 各模块的路由函数，按原来分支的先后排；返回 NEXT 表示不归它管
-const ROUTES = [routeClaude, routeFeedback, routeUsage, routeCaps, routeProviders, routeSettings, routeSessions, routeExtensions, routeModels, routeTerminal, routeComponents, routeModules, routeCustom, routeGit, routeLocal, routeOffice, routeFiles, routePreview, routeBus, routeQueue, routeDevside, routeLogin, routeRun];
+const ROUTES = [routeClaude, routeFeedback, routeUsage, routeCaps, routeProviders, routeSettings, routeSessions, routeExtensions, routeModels, routeTerminal, routeComponents, routeModules, routeOrphans, routeCustom, routeGit, routeLocal, routeOffice, routeFiles, routePreview, routeBus, routeQueue, routeDevside, routeLogin, routeRun];
 
 // ── 路由 ──────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
@@ -133,6 +134,7 @@ server.listen(CFG.port, "127.0.0.1", () => {
   try { reapOrphans(); } catch (e) { log("孤儿进程清理失败: " + e.message); }
   try { expireTrash(); } catch (e) { log("回收站清理失败: " + e.message); }
   try { customRefresh(); } catch (e) { log("自定义组件入口重写失败: " + e.message); }
+  try { cleanOrphans(); } catch (e) { log("旧工具包残留清理失败: " + e.message); }
 });
 
 // 启动后校验一次模型名：不在清单里就落到默认。

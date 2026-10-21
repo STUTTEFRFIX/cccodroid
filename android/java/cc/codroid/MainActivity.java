@@ -148,13 +148,14 @@ public class MainActivity extends Activity {
                     } finally { GatewayService.pause(false); }
                 }
                 Updater.get(this).dropStagedIfInstalled();
+                ins.dropTrash();                  // 卸载删到一半被打断的残骸
                 if (!env.devkitReady()) {
                     installFirstDevkit(ins);
                     say(Tr.t("✓ 开发工具包就绪"));
                     Ledger.add(env, "install", true, Tr.t("首次安装开发工具包"), null);
                 }
                 deployAssets();
-                if (!env.claudeReady()) {
+                if (!env.claudeReady() && !env.claudeOff()) {      // 用户自己卸的不装回，等他在设置里选版本
                     ins.installClaude(new File(env.app, "scripts/install-claude.sh"));
                     say(Tr.t("✓ Claude Code 就绪"));
                 }
@@ -604,6 +605,58 @@ public class MainActivity extends Activity {
         }, "devkit-local").start();
     }
 
+    /**
+     * 卸载开发工具包 / Claude Code（设置页，确认框页面里弹过了）。会话、工作区、登录、设置都在 home 里，不动。
+     * · 工具包：网关靠里面的 node 跑，卸了只能回首装 —— 切回安装页、停网关、删掉，再走一遍启动流程（重选来源和模块）
+     * · Claude Code：只删程序、记下「用户卸了」，不自动装回；界面照常用，设置里那一项显示「未安装 · 安装…」，由用户选版本
+     */
+    private void uninstallUi(String item) {
+        new Thread(() -> {
+            if (Updater.gatewayBusy() || Updater.get(this).devkitMoving()) {
+                toast(Tr.t("有任务正在跑，等它结束再卸载"));
+                return;
+            }
+            Installer ins = new Installer(env, new Installer.Progress() {
+                public void step(String m) { say(m); }
+                public void bytes(long d, long t) { progress(d, t); }
+            });
+            if ("claude".equals(item)) {
+                try {
+                    ins.uninstallClaude();
+                    Ledger.add(env, "uninstall", true, Tr.t("卸载 Claude Code"), null);
+                    Updater.get(this).claudeRemoved();
+                    toast(Tr.t("已卸载 Claude Code。要用时到 设置 → 更新 里点「安装…」"));
+                } catch (Exception e) {
+                    Ledger.add(env, "uninstall", false, e.getMessage(), null);
+                    toast("✗ " + e.getMessage());
+                }
+                return;
+            }
+            CountDownLatch shown = new CountDownLatch(1);
+            ui.post(() -> {
+                if (web != null) { web.destroy(); web = null; }
+                booted = false;
+                buildSetupUi();
+                shown.countDown();
+            });
+            try {
+                shown.await();
+                say(Tr.t("卸载开发工具包…"));
+                GatewayService.pause(true);
+                try { ins.uninstallDevkit(); }
+                finally { GatewayService.pause(false); }
+                Ledger.add(env, "uninstall", true, Tr.t("卸载开发工具包"), null);
+                say(Tr.t("✓ 已卸载。接下来重新安装开发工具包："));
+            } catch (Exception e) {
+                Ledger.add(env, "uninstall", false, e.getMessage(), null);
+                say("✗ " + e.getMessage());
+            }
+            ui.post(this::boot);
+        }, "uninstall").start();
+    }
+
+    private void toast(String m) { ui.post(() -> android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show()); }
+
     /** 替换工具包：网关要停，界面切回进度页，装完再回来 */
     private void applyDevkitUi() {
         Updater upd = Updater.get(this);
@@ -811,7 +864,10 @@ public class MainActivity extends Activity {
         chooser = new LinearLayout(this);
         chooser.setOrientation(LinearLayout.VERTICAL);
         chooser.setVisibility(View.GONE);
-        col.addView(chooser, new LinearLayout.LayoutParams(-1, -2));
+        // 套一层 ScrollView：手机竖屏放不下 8 个模块 +「开始安装」，不套的话按钮被挤出屏幕、也划不动
+        ScrollView chooserScroll = new ScrollView(this);
+        chooserScroll.addView(chooser);
+        col.addView(chooserScroll, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout acts = new LinearLayout(this);
         acts.addView(retry, new LinearLayout.LayoutParams(-2, -2));
         acts.addView(stuck, new LinearLayout.LayoutParams(-2, -2));
@@ -934,6 +990,10 @@ public class MainActivity extends Activity {
             /** 更新卡片的「从本地文件安装」：弹系统文件选择器，选好后由 applyLocalDevkitUi 接手 */
             @android.webkit.JavascriptInterface public void pickDevkit() {
                 ui.post(() -> { pickWait = null; try { startActivityForResult(devkitPickIntent(), REQ_DEVKIT); } catch (Exception ignored) {} });
+            }
+            /** 设置页「卸载」：devkit / claude。确认框在页面里弹过了 */
+            @android.webkit.JavascriptInterface public void uninstall(String item) {
+                if ("devkit".equals(item) || "claude".equals(item)) uninstallUi(item);
             }
             @android.webkit.JavascriptInterface public void unfreeze() { ui.post(() -> bounce()); }
             /** 更新说明（见 WhatsNew）：页面启动时来取，显示出来后调 whatsNewSeen */

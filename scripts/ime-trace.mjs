@@ -48,7 +48,11 @@ const java = `        web = new WebView(this) {
             @Override protected void onFocusChanged(boolean f, int d, android.graphics.Rect r) { imeTrace("VIEW focus " + f); super.onFocusChanged(f, d, r); }
             @Override public void onWindowFocusChanged(boolean f) { imeTrace("VIEW windowFocus " + f); super.onWindowFocusChanged(f); }
 `;
-s = s.replace(anchor, java);
+// 主线自己也覆写了 onCreateInputConnection（记「空连接」），跟踪版要接管它：先摘掉主线那段，跟踪版里补上同样的记录
+const own = /            @Override public android\.view\.inputmethod\.InputConnection onCreateInputConnection\([^)]*\) \{\n[\s\S]*?\n            \}\n/;
+const hadOwn = own.test(s);
+s = s.replace(own, "");
+s = s.replace(anchor, hadOwn ? java.replace("if (ic == null) return null;", "imeNoConn = ic == null;\n                if (ic == null) return null;") : java);
 
 // 写日志 + 给页面的 CCIme.log
 const helper = `

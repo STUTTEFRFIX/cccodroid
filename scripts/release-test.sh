@@ -25,6 +25,7 @@ cat > "$N" <<EOF
 - 网关端口 8792（正式版 8791），工具包单独一份（\`testkit-*\`，首次打开会下载约 650 MB）。
 - 不能装组件市场的组件。
 - 只会更新到新的测试版，不会被推去装正式版。
+- 联想平板首次安装后如果提示「不支持分屏」，是系统把它误记进了分屏黑名单：重启一次，或再覆盖安装一遍就好。
 
 对应正式版 v$VER 的代码。sha256：\`$SHA\`
 
@@ -39,6 +40,7 @@ It's for two-app testing the way the developers do it: have Claude in your regul
 - Gateway port 8792 (the regular app uses 8791) and its own toolchain (\`testkit-*\`, about 650 MB downloaded on first launch).
 - Components from the component market can't be installed.
 - It only updates to newer test builds, never to the regular app.
+- On Lenovo tablets, if a fresh install says it "doesn’t support split screen", the system has wrongly put it on its split-screen blocklist. Reboot once, or install the same APK over it again.
 
 Same code as release v$VER. sha256: \`$SHA\`
 EOF

@@ -1,5 +1,7 @@
 # 开发工具包：从 Termux 官方仓库构建，发布到 Release。
 # 推 tag devkit-YYYY.MM.DD 触发；App 按 devkit-sources.txt 里钉的 tag 下载。
+# 测试版（cccodroid-test，包名 cc.codtest）：手动运行，填 target=cc.codtest、tag=testkit-YYYY.MM.DD，发成预发布。
+# 测试版的 tag 不能以 devkit- 开头 —— 正式版的更新检查会挑版本最高的 devkit-*，挑到别的包名的就会报"需要更新版本"。
 # 在公开 CI 上构建，任何人都能复现、核对每个包的来源（见 devkit.lock.json / SBOM.tsv）。
 name: devkit
 
@@ -7,6 +9,13 @@ on:
   push:
     tags: ['devkit-*']
   workflow_dispatch:
+    inputs:
+      target:
+        description: 包名（10 个字符）
+        default: cc.codroid
+      tag:
+        description: 要发布的 tag（留空只构建不发布；测试版用 testkit-YYYY.MM.DD）
+        default: ''
 
 permissions:
   contents: write
@@ -15,6 +24,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      T: ${{ inputs.target || 'cc.codroid' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,24 +34,26 @@ jobs:
           node-version: '22'
 
       - name: 构建（下载 .deb → 校验 → 等长改前缀 → tar → gzip）
-        run: node devkit/devkit.mjs build --target cc.codroid --out out --cache cache
+        run: node devkit/devkit.mjs build --target "$T" --out out --cache cache
 
       - name: 发布
-        if: startsWith(github.ref, 'refs/tags/devkit-')
+        if: startsWith(github.ref, 'refs/tags/devkit-') || inputs.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${{ inputs.tag }}"; [ -n "$TAG" ] || TAG="${GITHUB_REF#refs/tags/}"
+          case "$T:$TAG" in cc.codroid:devkit-*) PRE="" ;; cc.codroid:*) echo "正式包名的 tag 要以 devkit- 开头"; exit 1 ;;
+            *:devkit-*) echo "别的包名不能用 devkit- 开头的 tag（正式版会挑到它）"; exit 1 ;; *) PRE="--prerelease" ;; esac
           GZ_SHA=$(node -p "require('./out/devkit.lock.json').gz.sha256")
           SNAP=$(node -p "require('./out/devkit.lock.json').snapshot")
           N=$(node -p "require('./out/devkit.lock.json').packages.length")
           cat > notes.md <<NOTES
           **简体中文** · [English](#english)
 
-          cccodroid 开发工具包（$N 个组件），取自 Termux 官方仓库，仅做等长前缀改写（com.termux → cc.codroid）。
+          cccodroid 开发工具包（$N 个组件），取自 Termux 官方仓库，仅做等长前缀改写（com.termux → $T）。
 
           - 仓库快照：$SNAP
-          - \`devkit-cc.codroid.tar.gz\` sha256：\`$GZ_SHA\`
+          - \`devkit-$T.tar.gz\` sha256：\`$GZ_SHA\`
           - 每个组件的版本、哈希、构建配方：\`devkit.lock.json\` / \`SBOM.tsv\`
 
           **源码**：各组件按其自身许可证分发（含 GPL 等）。构建配方见 [termux-packages](https://github.com/termux/termux-packages)，
@@ -50,14 +63,14 @@ jobs:
 
           ## English
 
-          cccodroid toolchain ($N components) taken from the official Termux repositories, with only a same-length prefix relocation (com.termux → cc.codroid).
+          cccodroid toolchain ($N components) taken from the official Termux repositories, with only a same-length prefix relocation (com.termux → $T).
 
           - Repository snapshot: $SNAP
-          - \`devkit-cc.codroid.tar.gz\` sha256: \`$GZ_SHA\`
+          - \`devkit-$T.tar.gz\` sha256: \`$GZ_SHA\`
           - Version, hash and build recipe of every component: \`devkit.lock.json\` / \`SBOM.tsv\`
 
           **Source**: each component is distributed under its own license (including GPL). Build recipes are in [termux-packages](https://github.com/termux/termux-packages),
           and each recipe's \`build.sh\` names the upstream source; if you need a copy of the source matching this release, ask in Issues.
           NOTES
-          gh release create "$TAG" --title "$TAG" --notes-file notes.md \
-            out/devkit-cc.codroid.tar.gz out/devkit.lock.json out/SBOM.tsv
+          gh release create "$TAG" $PRE --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md \
+            out/devkit-$T.tar.gz out/devkit.lock.json out/SBOM.tsv

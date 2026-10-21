@@ -22,6 +22,7 @@ cp -RL "$ROOT/android" "$ROOT/gateway" "$ROOT/scripts" "$ROOT/third_party" "$W/"
 cp "$ROOT/devkit-sources.txt" "$ROOT/devkit-pin.json" "$W/"
 rm -rf "$W/android/build" "$W/android/assets/app"
 node "$ROOT/scripts/mktest.mjs" "$W"
+[ "$IMETRACE" = 1 ] && node "$ROOT/scripts/ime-trace.mjs" "$W"   # 输入法事件流跟踪构建
 
 DEVKIT_BASES="https://github.com/greyoak111/cccodroid/releases/download/$TESTKIT/" KEY="$TEST_KEY" sh "$W/scripts/build.sh"
 mkdir -p "$ROOT/dist"

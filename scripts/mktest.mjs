@@ -47,8 +47,9 @@ function patch(rel, pairs) {
 const J = "android/java/cc/codtest/";
 patch("android/AndroidManifest.xml", [['android:label="cccodroid"', 'android:label="cccodroid-test"']]);
 patch(J + "Env.java", [["static final int PORT = 8791;", "static final int PORT = 8792;"]]);
-patch("gateway/server.mjs", [["Number(process.env.CCAPP_LLAMA_PORT) || 8811", "Number(process.env.CCAPP_LLAMA_PORT) || 8812"],
-                             ['product: PREFIX ? "cccodroid" : "Claude CLI"', 'product: PREFIX ? "cccodroid-test" : "Claude CLI"']]);
+// 网关 0.3.8 起拆成 gateway/gw/ 下的模块
+patch("gateway/gw/providers.mjs", [["Number(process.env.CCAPP_LLAMA_PORT) || 8811", "Number(process.env.CCAPP_LLAMA_PORT) || 8812"]]);
+patch("gateway/gw/caps.mjs", [['product: PREFIX ? "cccodroid" : "Claude CLI"', 'product: PREFIX ? "cccodroid-test" : "Claude CLI"']]);
 patch(J + "MainActivity.java", [['WebView.setWebContentsDebuggingEnabled(new File(env.home, ".webdebug").exists());', "WebView.setWebContentsDebuggingEnabled(true);   // 测试版：网页调试默认开"],
                                 ['title.setText("cccodroid");', 'title.setText("cccodroid-test");']]);
 patch(J + "GatewayService.java", [['.setContentTitle("cccodroid")', '.setContentTitle("cccodroid-test")']]);

@@ -56,8 +56,8 @@ patch(J + "GatewayService.java", [['.setContentTitle("cccodroid")', '.setContent
 patch(J + "Updater.java", [
   ['!tag.matches("v\\\\d+(\\\\.\\\\d+)*")', '!tag.matches("test-v\\\\d+(\\\\.\\\\d+)*")'],
   ["app.latest = tag.substring(1);", "app.latest = tag.substring(6);"],
-  ['a.optString("name").equals("cccodroid.apk")', 'a.optString("name").equals("cccodroid-test.apk")'],
-  ['app.alt = app.url.startsWith(MIRROR + "/") ? null : MIRROR + "/dl/" + tag + "/cccodroid.apk";', "app.alt = null;   // 测试版不进 cccodroid.net 镜像"],
+  ["static String apkName(String flavor) { return \"36\".equals(flavor) ? \"cccodroid-36.apk\" : \"cccodroid.apk\"; }", "static String apkName(String flavor) { return \"36\".equals(flavor) ? \"cccodroid-test-36.apk\" : \"cccodroid-test.apk\"; }"],
+  ["app.alt = app.url.startsWith(MIRROR + \"/\") ? null : MIRROR + \"/dl/\" + tag + \"/\" + name;", "app.alt = null;   // 测试版不进 cccodroid.net 镜像"],
   ['!tag.startsWith("devkit-")', '!tag.startsWith("testkit-")'],
   ["cmpVer(tag.substring(7), best.substring(7))", "cmpVer(tag.substring(8), best.substring(8))"],
 ]);

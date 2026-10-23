@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { CFG, PATHS, PREFIX } from "./config.mjs";
 import { SETTINGS } from "./settings.mjs";
-import { API_KEY, PROVIDER } from "./providers.mjs";
+import { API_KEY, PROVIDER, providerBrief } from "./providers.mjs";
 import { bridgeAlive, runClaude, safeMode } from "./claude.mjs";
 import { LAST_SESSION, RUNS } from "./runs.mjs";
 import { NEXT, sendJson, uiTag } from "./http.mjs";
@@ -47,6 +47,18 @@ const COMMAND_META = {
 
 const FALLBACK_COMMANDS = Object.keys(COMMAND_META);
 
+/** 权限规则（能力页「工具」一节标允许 / 询问 / 拒绝用）：用户级 ~/.claude/settings.json 的 permissions + 本应用设置里的允许 / 禁用工具 */
+function permRules() {
+  const r = { allow: [], ask: [], deny: [] };
+  try {
+    const j = JSON.parse(fs.readFileSync((process.env.HOME || CFG.home) + "/.claude/settings.json", "utf8")).permissions || {};
+    for (const k of ["allow", "ask", "deny"]) if (Array.isArray(j[k])) r[k].push(...j[k].map(String));
+  } catch {}
+  if (Array.isArray(SETTINGS.allowedTools)) r.allow.push(...SETTINGS.allowedTools);
+  if (Array.isArray(SETTINGS.disallowedTools)) r.deny.push(...SETTINGS.disallowedTools);
+  return r;
+}
+
 function capabilities() {
   const init = LAST_INIT || {};
   const cmds = (init.slash_commands || FALLBACK_COMMANDS).filter((c) => !c.startsWith("__"));
@@ -65,6 +77,7 @@ function capabilities() {
     mcpServers: init.mcp_servers || [],
     outputStyle: init.output_style || "default",
     version: init.claude_code_version || "",
+    rules: permRules(),
     settings: SETTINGS,
   };
 }
@@ -80,9 +93,12 @@ export async function routeCaps(req, res, u, p) {
       // 登录态厂商也算"就绪"：它不用密钥，用的是 claude 自己的 OAuth 登录
       hasKey: !!API_KEY || !!PROVIDER.login,
       keyMode: API_KEY ? "key" : (PROVIDER.login ? "login" : "none"),
+      // 别家填了 Key 也算接上了：会话可以单独选那家（0.3.16 起），首屏不该再叫人去接模型
+      otherKey: providerBrief().some((p) => !p.active && p.keyMode === "key"),
       model: SETTINGS.model || PROVIDER.defaultModel || null,
       provider: PROVIDER.id,
       providerLabel: PROVIDER.label || PROVIDER.id,
+      providerLabelEn: PROVIDER.labelEn || "",   // 界面不是中文时用（和设置里选接口那张单子同一规则）
       upstream: CFG.upstream,
       nativeModels: !!PROVIDER.nativeModels,
       workspace: CFG.workspace,

@@ -20,19 +20,34 @@
   const tk = (s) => s;   // 词条键：先登记（扫描器认它），显示时 tr()
   const NAMES = { files: tk("文件"), viewer: tk("查看"), git: tk("版本"), term: tk("终端"), browser: tk("浏览器") };
   // 浏览器窗格是外壳的原生视图，永远浮在页面上面 —— 这些浮层开着时得先把它藏起来，不然会被它挡住
-  const COVERS = ["lightbox", "sheet", "popup", "drawer", "dropzone"];
-  const LS_RATIO = "cc_lay_ratio", LS_DOCK = "cc_lay_dock";
+  const COVERS = ["lightbox", "sheet", "popup", "drawer", "dropzone", "set-ov"];   // set-ov：设置卡片是模态，盖在窗格上面
+  const LS_RATIO = "cc_lay_ratio", LS_DOCK = "cc_lay_dock", LS_LW = "cc_lay_lw", LS_DW = "cc_lay_dw";
+  const MIN_SIDE = 240, MAX_SIDE = 560;
   const root = document.documentElement;
   const $ = (id) => document.getElementById(id);
   const tr = (s) => (window.I18N && I18N.t ? I18N.t(s) : s);
 
-  let tier = 1, avoid = null, hooks = {};
+  let tier = 1, avoid = null, hooks = {}, ovCover = false;   // ovCover：app.js 的浮层管理说有弹层盖着
   const recent = [];                                       // 打开顺序，最后一个在最上面
   const isOpen = (id) => { const el = $(id); return !!el && !el.classList.contains("hidden"); };
   const rtl = () => root.getAttribute("dir") === "rtl";
   const docked = () => tier >= 3 && localStorage.getItem(LS_DOCK) !== "0";
 
-  function leftWidth() { return docked() ? Math.round(Math.min(420, Math.max(300, innerWidth * 0.28))) : 0; }
+  // 常驻侧栏宽度：拖过就用拖的（像素），没拖过按窗口宽度给个默认；总要给对话留够 MIN_CHAT
+  function leftWidth() {
+    if (!docked()) return 0;
+    const saved = parseFloat(localStorage.getItem(LS_LW));
+    const w = saved > 0 ? saved : 286;     // 默认照设计稿
+    return Math.round(Math.max(MIN_SIDE, Math.min(MAX_SIDE, innerWidth - MIN_CHAT, w)));
+  }
+
+  // 浮层侧栏（竖屏 / 窄屏，盖在对话上面的那种）宽度：拖过就用拖的，没拖过按窗口给大一点（约 62%），右边总留一条能点着关掉
+  function drawerWidth() {
+    const max = Math.max(260, Math.min(MAX_SIDE, Math.round(innerWidth * 0.86), innerWidth - 56));
+    const saved = parseFloat(localStorage.getItem(LS_DW));
+    const w = saved > 0 ? saved : Math.max(320, innerWidth * 0.62);
+    return Math.round(Math.max(Math.min(MIN_SIDE, max), Math.min(max, w)));
+  }
 
   function rightWidth() {
     const lw = leftWidth(), avail = innerWidth - lw;
@@ -59,6 +74,7 @@
     if (dock && !wasDocked && isOpen("drawer") === false && hooks.openDrawer) hooks.openDrawer();
     if (!dock && wasDocked && hooks.closeDrawer) hooks.closeDrawer(true);
     root.style.setProperty("--lw", leftWidth() + "px");
+    root.style.setProperty("--dw", drawerWidth() + "px");
 
     // 右侧工作区
     for (const id of PANES) { const i = recent.indexOf(id); if (!isOpen(id) && i >= 0) recent.splice(i, 1); }
@@ -82,7 +98,7 @@
     if (!(window.CCApp && CCApp.paneBounds)) return;
     let r = null;
     const open = recent.filter(isOpen);
-    const covered = COVERS.some((id) => isOpen(id)
+    const covered = ovCover || COVERS.some((id) => isOpen(id)
       && !(id === "drawer" && root.classList.contains("dock-l"))     // 常驻左栏不挡
       && !(id === "popup" && tier >= 2));                            // 宽屏时补全弹窗挪到了窗格左边
     if (isOpen("browser") && open[open.length - 1] === "browser" && !covered) {
@@ -154,12 +170,62 @@
     s.addEventListener("dblclick", () => { localStorage.removeItem(LS_RATIO); apply(); });
   }
 
+  // 侧栏右边缘的拖拽条：拖动改常驻侧栏宽度，记在 localStorage；双击回到默认
+  function sideSplitter() {
+    const s = document.createElement("div");
+    s.id = "side-split";
+    s.setAttribute("role", "separator");
+    s.setAttribute("aria-orientation", "vertical");
+    document.body.appendChild(s);
+    let drag = false;
+    s.addEventListener("pointerdown", (e) => { drag = true; try { s.setPointerCapture(e.pointerId); } catch {} root.classList.add("side-drag"); e.preventDefault(); });
+    s.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      let lw = rtl() ? innerWidth - e.clientX : e.clientX;
+      const rw = root.classList.contains("has-right") ? MIN_PANE : 0;
+      lw = Math.round(Math.max(MIN_SIDE, Math.min(MAX_SIDE, innerWidth - MIN_CHAT - rw, lw)));
+      localStorage.setItem(LS_LW, String(lw));
+      root.style.setProperty("--lw", lw + "px");
+      placeBrowser();
+    });
+    const end = () => { if (!drag) return; drag = false; root.classList.remove("side-drag"); apply(); };
+    s.addEventListener("pointerup", end);
+    s.addEventListener("pointercancel", end);
+    s.addEventListener("dblclick", () => { localStorage.removeItem(LS_LW); apply(); });
+  }
+
+  // 浮层侧栏右边缘的拖拽条（和常驻侧栏同款）：拖动改宽度，记在 localStorage；双击回到默认
+  function drawerSplitter() {
+    const panel = document.querySelector("#drawer .drawer-panel");
+    if (!panel) return;
+    const s = document.createElement("div");
+    s.className = "drawer-split";
+    s.setAttribute("role", "separator");
+    s.setAttribute("aria-orientation", "vertical");
+    panel.appendChild(s);
+    let drag = false;
+    s.addEventListener("pointerdown", (e) => { drag = true; try { s.setPointerCapture(e.pointerId); } catch {} root.classList.add("side-drag"); e.preventDefault(); e.stopPropagation(); });
+    s.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const max = Math.max(260, Math.min(MAX_SIDE, Math.round(innerWidth * 0.86), innerWidth - 56));
+      let w = rtl() ? innerWidth - e.clientX : e.clientX;
+      w = Math.round(Math.max(Math.min(MIN_SIDE, max), Math.min(max, w)));
+      localStorage.setItem(LS_DW, String(w));
+      root.style.setProperty("--dw", w + "px");
+    });
+    const end = () => { if (!drag) return; drag = false; root.classList.remove("side-drag"); };
+    s.addEventListener("pointerup", end);
+    s.addEventListener("pointercancel", end);
+    s.addEventListener("click", (e) => e.stopPropagation());          // 别让点击漏到遮罩上把抽屉关了
+    s.addEventListener("dblclick", (e) => { e.stopPropagation(); localStorage.removeItem(LS_DW); apply(); });
+  }
+
   let busy = false, raf = 0;
   addEventListener("resize", () => { if (busy) return; cancelAnimationFrame(raf); raf = requestAnimationFrame(apply); });
 
   window.CCLayout = {
     // app.js 启动时交过来：openDrawer() 展开侧栏并加载数据，closeDrawer(force) 收起
-    init(h) { hooks = h || {}; watch(); splitter(); apply(); },
+    init(h) { hooks = h || {}; watch(); splitter(); sideSplitter(); drawerSplitter(); apply(); },
     tier: () => tier,
     docked,
     // 宽屏下处于停靠状态的右侧窗格，按"最近打开在后"排；返回手势先关最后一个
@@ -177,6 +243,7 @@
     },
     collapse() { if (tier >= 3) localStorage.setItem(LS_DOCK, "0"); apply(); },
     setAvoid(x) { avoid = x == null ? null : +x; apply(); },
+    cover(on) { ovCover = !!on; placeBrowser(); },
     apply,
   };
 })();

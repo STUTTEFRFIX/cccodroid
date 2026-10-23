@@ -353,7 +353,7 @@ export function noteTokens(id, u) {
 
 // 汇率：界面货币跟语言走（中文显示人民币，其余显示美元），账户币种不同时按汇率换算并标「≈」。半天取一次
 let FX = null;
-async function usdCny() {
+export async function usdCny() {
   if (FX && Date.now() - FX.at < 12 * 3600e3) return FX;
   try {
     const j = await fetchJson("https://open.er-api.com/v6/latest/USD", {});
@@ -394,7 +394,9 @@ export function billAfterRun(id) {
   const v = PROVIDERS_CFG.providers[id];
   if (!v || billKind(v).kind === "none" || !String(v.apiKey || "").trim()) return;
   for (const t of billPending.get(id) || []) clearTimeout(t);
-  billPending.set(id, [30e3, 180e3, 600e3].map((ms) => { const t = setTimeout(() => billingInfo(id, true).catch(() => {}), ms); t.unref?.(); return t; }));
+  // 查完推一条 billing：顶栏的余额速览、用量页跟着更新（bus.mjs 间接引用本文件，这里按需加载免得循环引用）
+  const done = () => import("./bus.mjs").then((m) => m.publish({ type: "billing", id })).catch(() => {});
+  billPending.set(id, [30e3, 180e3, 600e3].map((ms) => { const t = setTimeout(() => billingInfo(id, true).then(done, () => {}), ms); t.unref?.(); return t; }));
 }
 
 export let PROVIDER = BUILTIN_PROVIDER;
@@ -446,6 +448,29 @@ function loadApiKey(p) {
 }
 
 export let API_KEY = null;   // 在 SETTINGS 载入后按「生效厂商」解析
+/** 按 id 取一家（0.3.16 起各会话可以用不同的接口）：生效的那家直接给 PROVIDER；配置里没有的给 null */
+export function providerById(id) {
+  if (!id || id === PROVIDER.id) return PROVIDER;
+  if (PROVIDERS_CFG && PROVIDERS_CFG.providers[id]) return pickProvider(id);
+  return id === BUILTIN_PROVIDER.id ? BUILTIN_PROVIDER : null;
+}
+/** 各家能不能用（有钥匙 / 走登录 / 本机），给输入栏的模型面板按接口分组用。钥匙本身不出网关 */
+export function providerBrief() {
+  const ids = PROVIDERS_CFG ? Object.keys(PROVIDERS_CFG.providers) : [BUILTIN_PROVIDER.id];
+  if (!ids.includes(PROVIDER.id)) ids.unshift(PROVIDER.id);
+  return ids.map((id) => {
+    const p = providerById(id);
+    return p && { id, label: p.label || id, labelEn: p.labelEn || "", login: !!p.login, local: !!p.local,
+      nativeModels: !!p.nativeModels, usable: !!(p.login || p.local || keyOf(p)), active: id === PROVIDER.id,
+      keyMode: keyOf(p) ? "key" : p.login ? "login" : "none", defaultModel: p.defaultModel || null };
+  }).filter(Boolean);
+}
+/** 这一家的密钥：生效的那家用已解析好的 API_KEY，别家现取（同样的回落规则，见 loadApiKey） */
+export function keyOf(p) {
+  if (!p || p === PROVIDER || p.id === PROVIDER.id) return API_KEY;
+  return loadApiKey(p);
+}
+
 /** 应用当前厂商：更新上游与密钥。
  *  模型清单缓存无需在此清除 —— fetchModels 以 MODELS_FOR===PROVIDER.id 为键，
  *  换厂商自然失效。 */
@@ -458,6 +483,7 @@ export function applyProvider() {
 /** claude 认的权限模式（2026-10 版二进制）。没有 manual */
 export const PERM_MODES = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
 
+function pickProvider(id) { return { id, explicit: !!PROVIDERS_RAW.providers[id] || id !== BUILTIN_PROVIDER.id, ...PROVIDERS_CFG.providers[id] }; }
 /** 生效厂商：设置里的 provider 优先，其次配置文件 active，最后内置兜底 */
 function resolveProvider() {
   const want = SETTINGS.provider;
@@ -467,7 +493,7 @@ function resolveProvider() {
     // explicit：密钥只认这条自己的，不往历史配置回落。唯一例外是老版 DeepSeek ——
     // 它的密钥可能还躺在 ccapp-config.json 里、配置文件里没它这一条。
     // （官方账户条目绝不能回落：那会把 DeepSeek 的钥匙注成 ANTHROPIC_API_KEY，见 loadApiKey）
-    const pick = (id) => ({ id, explicit: !!PROVIDERS_RAW.providers[id] || id !== BUILTIN_PROVIDER.id, ...PROVIDERS_CFG.providers[id] });
+    const pick = pickProvider;
     if (want && PROVIDERS_CFG.providers[want]) return pick(want);
     const a = PROVIDERS_CFG.active;
     if (a && PROVIDERS_CFG.providers[a]) return pick(a);
@@ -504,7 +530,7 @@ export async function routeProviders(req, res, u, p) {
   if (req.method === "POST" && p === "/api/providers/delete") {
     const b = JSON.parse((await readBody(req)) || "{}");
     const id = String(b.id || "");
-    if (id === PROVIDER.id && RUNS.size) return sendJson(res, 409, { error: "busy", message: tz("这一家正在用，等这一轮跑完再删。") });
+    if ([...RUNS.values()].some((r) => !r.ended && r.provider === id)) return sendJson(res, 409, { error: "busy", message: tz("这一家正在用，等这一轮跑完再删。") });
     if (PRESETS[id]) {
       // 预置厂商删不掉，只清空用户字段（密钥等）
       delete PROVIDERS_RAW.providers[id];

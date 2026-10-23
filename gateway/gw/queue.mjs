@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { CFG, LAST_LANG, log, tr, tz } from "./config.mjs";
 import { SETTINGS, saveSettings } from "./settings.mjs";
-import { API_KEY, PERM_MODES, PROVIDER } from "./providers.mjs";
+import { PERM_MODES, PROVIDER, keyOf, providerById } from "./providers.mjs";
+import { sessProvider } from "./sessmodel.mjs";
 import { isLoginMode } from "./models.mjs";
 import { findSessionFile } from "./sessions.mjs";
 import { killTree } from "./claude.mjs";
@@ -143,13 +144,17 @@ function record(run, ev) {
   else run.log.push({ ...ev });
 }
 
+/** 一轮结束时要知道的模块（定时任务记运行记录）在这里挂；钩子出错不影响收尾 */
+export const END_HOOKS = [];
 export function endRun(run, fields = {}) {
   if (run.ended) return;
+  if (run.limitTimer) clearTimeout(run.limitTimer);
+  for (const h of END_HOOKS) { try { h(run, fields); } catch (e) { log("结束钩子出错: " + e.message); } }
   flushPend(run);
   run.ended = true;
   RUNS.delete(run.id);
   if (!RUNS.size) runFlag(false);
-  publish({ type: "run_end", runId: run.id, sessionId: run.sessionId, aborted: !!run.aborted, ...(run.auto ? { auto: run.auto } : {}), ...fields });
+  publish({ type: "run_end", runId: run.id, sessionId: run.sessionId, aborted: !!run.aborted, ...(run.auto ? { auto: run.auto } : {}), ...(run.sched ? { sched: true } : {}), ...fields });
   goalCheck(run.sessionId);
   tasksCheck(run.sessionId);
   run.log = [];
@@ -184,7 +189,8 @@ function autoCompactOff() {
 export function idleArm(sid, flags) {
   idleDisarm(sid);
   const ctx = flags.mainCtx || 0;
-  if (SETTINGS.idleCompaction === false || !PROVIDER.nativeModels || PROVIDER.local) return;
+  const P = sessProvider(sid);           // 按这个会话用的那家（缓存计时只对原生家有意义）
+  if (SETTINGS.idleCompaction === false || !P.nativeModels || P.local) return;
   if (!flags.cache1h || flags.cache5m || ctx < IDLE_MIN_TOKENS || autoCompactOff()) return;
   let size = -1; try { size = fs.statSync(findSessionFile(sid).file).size; } catch { return; }
   const timer = setTimeout(() => idleFire(sid), IDLE_MS);
@@ -195,13 +201,14 @@ export function idleArm(sid, flags) {
 function idleFire(sid) {
   const x = IDLE.get(sid);
   IDLE.delete(sid);
-  if (!x || SETTINGS.idleCompaction === false || !PROVIDER.nativeModels) return;
+  const P = sessProvider(sid);
+  if (!x || SETTINGS.idleCompaction === false || !P.nativeModels) return;
   const why = (() => {
     if (laneRun("s:" + sid)) return "正在跑";
     if (QUEUE.some((q) => sidOfLane(laneOfItem(q)) === sid)) return "有排队的消息";
     try { if (fs.statSync(findSessionFile(sid).file).size !== x.size) return "会话有新内容"; } catch { return "会话文件不见了"; }
     const rl = RATE_LIMITS;
-    if (rl && isLoginMode() && Math.max(rl.fiveHour?.used || 0, rl.sevenDay?.used || 0) >= 90) return "额度逼近上限";
+    if (rl && isLoginMode(P) && Math.max(rl.fiveHour?.used || 0, rl.sevenDay?.used || 0) >= 90) return "额度逼近上限";
     return null;
   })();
   if (why) { log(`⏲ 空闲压缩跳过（${why}）：会话 ${sid.slice(0, 8)}`); return; }
@@ -230,7 +237,7 @@ export function pump() {
   }
 }
 
-function enqueue(body) {
+export function enqueue(body) {
   const item = {
     id: newRunId(),
     message: String(body.message || ""),
@@ -238,9 +245,15 @@ function enqueue(body) {
     follow: body.follow ? String(body.follow) : null,
     cid: body.cid ? String(body.cid).slice(0, 64) : null,   // 前端自己的消息号：SSE 可能比 POST 的响应先到
     model: body.model || null,
+    // 新会话（还没会话号）在输入栏面板里选的模型 / 思考强度：跑起来拿到会话号时记成这个会话自己的（gw/sessmodel.mjs）
+    pin: !body.sessionId && body.pin && typeof body.pin === "object" ? Object.fromEntries(["model", "effort", "provider"].filter((k) => typeof body.pin[k] === "string").map((k) => [k, body.pin[k].slice(0, 200)])) : null,
     permissionMode: body.permissionMode || null,
     addDirs: Array.isArray(body.addDirs) ? body.addDirs : [],
+    projectId: body.projectId ? String(body.projectId) : null,
     at: Date.now(),
+    // 只有网关自己（定时任务）会带的：前端发来的 /api/chat 不许设这些
+    ...(body.internal ? { cwd: body.cwd || null, effort: body.effort || null, provider: body.provider || null, sched: body.sched || null, unattended: !!body.unattended,
+      allowedTools: body.allowedTools || null, disallowedTools: body.disallowedTools || null, timeoutMs: body.timeoutMs || 0 } : {}),
     ...(body.auto ? { auto: body.auto } : {}),
   };
   // 插话（"inject"，旧前端叫 "interrupt"）：不打断。消息直接写进正在跑的 claude 的 stdin，
@@ -272,14 +285,16 @@ export async function routeQueue(req, res, u, p) {
     let b;
     try { b = JSON.parse((await readBody(req)) || "{}"); } catch { return sendJson(res, 400, { error: "bad json" }); }
     if (!String(b.message || "").trim()) return sendJson(res, 400, { error: "empty message" });
-    if (!API_KEY && !PROVIDER.login && !/^\/(model|models|effort|autocompact)\b/.test(String(b.message).trim())) {
+    // 看这条消息要用的那家（新会话首条选的 / 会话钉的 / 全局的），不是只看全局
+    const bp = (b.pin && typeof b.pin.provider === "string" && !b.sessionId && providerById(b.pin.provider)) || sessProvider(b.sessionId || null);
+    if (!keyOf(bp) && !bp.login && !/^\/(model|models|effort|autocompact)\b/.test(String(b.message).trim())) {
       return sendJson(res, 503, {
         error: "no_api_key",
-        message: tz("「{name}」还没填 Key。到 设置 → 接口 里填好保存，或换一个接口。", { name: PROVIDER.label || PROVIDER.id }),
+        message: tz("「{name}」还没填 Key。到 设置 → 接口 里填好保存，或换一个接口。", { name: bp.label || bp.id }),
       });
     }
     if (QUEUE.length >= 50) return sendJson(res, 429, { error: "queue_full", message: tz("排队的消息太多了。") });
-    const item = enqueue(b);
+    const item = enqueue({ ...b, internal: false });
     return sendJson(res, 200, { ok: true, id: item.id, injected: !!item.injected, started: RUNS.has(item.id) });
   }
   if (req.method === "POST" && p === "/api/interrupted/dismiss") {

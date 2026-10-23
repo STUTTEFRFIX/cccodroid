@@ -92,7 +92,8 @@ public class MainActivity extends Activity {
         edgeToEdge();
         pending = getIntent();
         java.util.List<String> want = new java.util.ArrayList<>();
-        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+        // targetSdk ≥ 30 时这两个存储权限已经不管用（分区存储），改由 askAllFiles 要「所有文件访问」，不挡启动
+        if (getApplicationInfo().targetSdkVersion < 30 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             want.add(Manifest.permission.READ_EXTERNAL_STORAGE);
             want.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
         }
@@ -101,7 +102,8 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) {
-        boot();   // 没给也照样跑：工作区退回私有目录
+        if (code == 1) boot();   // 没给也照样跑：工作区退回私有目录
+        else if (code == 2) askAllFiles();   // 通知权限问完，接着问共享存储（两个系统框别叠在一起）
     }
 
     /**
@@ -259,7 +261,7 @@ public class MainActivity extends Activity {
     }
     @Override public void onConfigurationChanged(android.content.res.Configuration cfg) {
         super.onConfigurationChanged(cfg);
-        if (web != null) web.evaluateJavascript("window.Theme&&Theme.system(" + systemNight() + ")", null);
+        if (web != null) web.evaluateJavascript(guarded("Theme.system", "window.Theme&&Theme.system(" + systemNight() + ")"), null);
     }
 
     /** 通知或设置页递过来的动作 */
@@ -310,12 +312,16 @@ public class MainActivity extends Activity {
             if (n == 0 && uris.isEmpty() && text != null) toPage("ccapp-insert", text);
         }, "share-in").start();
     }
+    /** 往页面里调代码都套一层：错误在注入代码里自己接住，连同入口名交给页面按原文显示（app.js __ccErr）。
+     *  不接的话，从注入代码里冒出去的错 WebView 只给一句「Script error.」，没有文件、行号和原因，查不出是哪一处 */
+    private static String caught(String entry) { return "catch(e){window.__ccErr&&__ccErr(" + org.json.JSONObject.quote(entry) + ",e)}"; }
+    private static String guarded(String entry, String code) { return "try{" + code + "}" + caught(entry); }
     /** 页面可能还在启动：等 __cc 就绪再派发（app.js 里有对应的监听） */
     private void toPage(String event, String value) {
         ui.post(() -> {
             if (web == null) return;
-            web.evaluateJavascript("(function f(n){if(window.__cc&&window.__cc.view){window.dispatchEvent(new CustomEvent(" + org.json.JSONObject.quote(event)
-                + ",{detail:{value:" + org.json.JSONObject.quote(value) + "}}))}else if(n<150)setTimeout(function(){f(n+1)},200)})(0)", null);
+            web.evaluateJavascript("(function f(n){try{if(window.__cc&&window.__cc.view){window.dispatchEvent(new CustomEvent(" + org.json.JSONObject.quote(event)
+                + ",{detail:{value:" + org.json.JSONObject.quote(value) + "}}))}else if(n<150)setTimeout(function(){f(n+1)},200)}" + caught(event) + "})(0)", null);
         });
     }
     private String displayName(android.net.Uri u) {
@@ -329,8 +335,8 @@ public class MainActivity extends Activity {
     /** 从「已完成」通知点进来：切到那个会话（界面正显示它就不动）。页面可能还在启动，等 __cc 就绪 */
     private void openSession(String sid) {
         if (web == null || sid == null || !sid.matches("[0-9A-Za-z-]{8,64}")) return;
-        web.evaluateJavascript("(function f(n){var c=window.__cc;if(c&&c.view){setTimeout(function(){if(c.view.sessionId!==\"" + sid
-            + "\")c.openSession(\"" + sid + "\")},n?800:0)}else if(n<50)setTimeout(function(){f(n+1)},200)})(0)", null);
+        web.evaluateJavascript("(function f(n){var c=window.__cc;if(c&&c.view){setTimeout(function(){try{if(c.view.sessionId!==\"" + sid
+            + "\")c.openSession(\"" + sid + "\")}" + caught("openSession") + "},n?800:0)}else if(n<50)setTimeout(function(){f(n+1)},200)})(0)", null);
     }
 
     // ── 工具包从哪装：GitHub / cccodroid.net 镜像 / 本地文件 ──────────────────
@@ -771,10 +777,21 @@ public class MainActivity extends Activity {
      * 本该由系统在"界面在前台时建第一个通知渠道"那一刻代问 —— 但我们的渠道由前台服务建，常常错过时机，
      * 之后系统就再也不问，通知被整个屏蔽（实测 Android 14：发了 15 条、显示 0 条）。只问一次。
      */
-    private void askNotifications() {
+    private void askPerms() { if (!askNotifications()) askAllFiles(); }
+
+    /** @return 这次弹了东西（系统权限框或引导框） */
+    private boolean askNotifications() {
         android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
         SharedPreferences sp = getSharedPreferences("ui", MODE_PRIVATE);
-        if (nm.areNotificationsEnabled() || sp.getBoolean("askedNotifySettings", false)) return;
+        // targetSdk ≥ 33 的包可以直接弹系统的通知权限框（28 的包不行，见上）
+        if (Build.VERSION.SDK_INT >= 33 && getApplicationInfo().targetSdkVersion >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
+                && !sp.getBoolean("askedNotifyPerm", false)) {
+            sp.edit().putBoolean("askedNotifyPerm", true).apply();
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2);
+            return true;
+        }
+        if (nm.areNotificationsEnabled() || sp.getBoolean("askedNotifySettings", false)) return false;
         sp.edit().putBoolean("askedNotifySettings", true).apply();
         new android.app.AlertDialog.Builder(this)
             .setTitle(Tr.t("开启通知"))
@@ -785,6 +802,31 @@ public class MainActivity extends Activity {
                 } catch (Exception e) {
                     startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
                 }
+            })
+            .setNegativeButton(Tr.t("以后再说"), null)
+            .show();
+        return true;
+    }
+
+    /**
+     * targetSdk ≥ 30：共享目录 /sdcard/cccodroid（交付 APK、截图、本地工具包）要「所有文件访问」。
+     * Shizuku 已授权就用 appops 直接给；否则问一次，带去系统设置页。给了以后重启网关才进 CCAPP_SHARED
+     */
+    private void askAllFiles() {
+        if (getApplicationInfo().targetSdkVersion < 30 || Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager()) return;
+        if (Priv.granted()) {
+            new Thread(() -> android.util.Log.i("cccodroid", "所有文件访问（Shizuku）：" + Priv.run("appops set --uid " + getPackageName() + " MANAGE_EXTERNAL_STORAGE allow"))).start();
+            return;
+        }
+        SharedPreferences sp = getSharedPreferences("ui", MODE_PRIVATE);
+        if (sp.getBoolean("askedAllFiles", false)) return;
+        sp.edit().putBoolean("askedAllFiles", true).apply();
+        new android.app.AlertDialog.Builder(this)
+            .setTitle(Tr.t("允许访问共享存储"))
+            .setMessage(Tr.t("cccodroid 和其他应用交换文件（交付的 APK、截图、离线工具包）用的是 /sdcard/cccodroid。这个版本的安卓要你在设置里打开「所有文件访问」才能读写它。\n\n不开也能用，只是这些文件只留在应用私有目录里。"))
+            .setPositiveButton(Tr.t("去开启"), (d, w) -> {
+                try { startActivity(new Intent("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION", Uri.parse("package:" + getPackageName()))); }
+                catch (Exception e) { try { startActivity(new Intent("android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION")); } catch (Exception ignored) {} }
             })
             .setNegativeButton(Tr.t("以后再说"), null)
             .show();
@@ -938,7 +980,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("SetJavaScriptEnabled")
     private void showWeb() {
-        askNotifications();
+        askPerms();
         // 网页调试默认关：开着时任何连上 adb 的电脑都能读页面（含网关令牌）。
         // 要调试就在终端里 touch ~/.webdebug，重开应用生效；只有本机终端写得进私有目录
         WebView.setWebContentsDebuggingEnabled(new File(env.home, ".webdebug").exists());
@@ -1009,6 +1051,15 @@ public class MainActivity extends Activity {
             @android.webkit.JavascriptInterface public void shareText(String text) {
                 if (text != null && !text.isEmpty()) ui.post(() -> shareTextNow(text));
             }
+            /** 复制到剪贴板：WebView 里 navigator.clipboard.writeText 常被拒（NotAllowedError，页面没焦点或权限策略），走系统剪贴板稳 */
+            @android.webkit.JavascriptInterface public boolean copyText(String text) {
+                if (text == null) return false;
+                try {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("cccodroid", text));
+                    return true;
+                } catch (Exception e) { return false; }
+            }
             /** 冻结脱困：WebView 偶发把这个文档的触摸滚动整个吞掉，同站重载不好，跨站跳一次再回来才好。见 bounce() */
             /** 更新卡片的「从本地文件安装」：弹系统文件选择器，选好后由 applyLocalDevkitUi 接手 */
             @android.webkit.JavascriptInterface public void pickDevkit() {
@@ -1024,9 +1075,9 @@ public class MainActivity extends Activity {
             @android.webkit.JavascriptInterface public void whatsNewSeen() { WhatsNew.seen(MainActivity.this); }
             @android.webkit.JavascriptInterface public boolean nightMode() { return systemNight(); }
             @android.webkit.JavascriptInterface public void setBars(boolean dark) { ui.post(() -> applyBars(dark)); }
-            /** 界面里的风格（native / qiusuo）：状态栏、安装页、对话框、内置浏览器的颜色按它取。theme.js 在 setBars 之前调 */
+            /** 界面里的风格（native / qiusuo / zhuyue）：状态栏、安装页、对话框、内置浏览器的颜色按它取。theme.js 在 setBars 之前调 */
             @android.webkit.JavascriptInterface public void skinPref(String s) {
-                if ("native".equals(s) || "qiusuo".equals(s))
+                if ("native".equals(s) || "qiusuo".equals(s) || "zhuyue".equals(s))
                     getSharedPreferences("ui", MODE_PRIVATE).edit().putString("skin", s).commit();
             }
             /** 界面里的外观设置（auto / light / dark），下次启动时安装页照着上色 */
@@ -1230,7 +1281,7 @@ public class MainActivity extends Activity {
     }
 
     private void savedJs(boolean ok, String msg) {
-        if (web != null) web.evaluateJavascript("window.__ccSaved&&__ccSaved(" + ok + "," + org.json.JSONObject.quote(msg) + ")", null);
+        if (web != null) web.evaluateJavascript(guarded("__ccSaved", "window.__ccSaved&&__ccSaved(" + ok + "," + org.json.JSONObject.quote(msg) + ")"), null);
     }
 
     // ── 嵌入式浏览器窗格 ──
@@ -1244,17 +1295,39 @@ public class MainActivity extends Activity {
             root.addView(pane, new FrameLayout.LayoutParams(0, 0));
             pane.load(url);
             tickPaneBack();
+            // 页面先报位置、后叫开窗格（raise 里同步报，paneOpen 排在后面）：那次位置到的时候窗格还没建，被丢了，
+            // 页面那边位置没变就不会再报 —— 窗格一直藏着，看着是一片空白，拖一下边缘才出来（群友 10-23 报）
+            if (paneBox != null) placePane(paneBox[0], paneBox[1], paneBox[2], paneBox[3]);
         } else if (url != null && !url.isEmpty()) pane.load(url);
     }
+    private float[] paneBox;   // 页面最近一次报的位置，窗格还没建时也记着
     private void placePane(float x, float y, float w, float h) {
+        paneBox = new float[] { x, y, w, h };
         if (pane == null) return;
         if (w <= 0 || h <= 0) { pane.setVisibility(View.GONE); return; }
         float d = getResources().getDisplayMetrics().density;
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) pane.getLayoutParams();
         lp.leftMargin = Math.round(x * d); lp.topMargin = Math.round(y * d);
-        lp.width = Math.round(w * d); lp.height = Math.round(h * d);
+        int pw = Math.round(w * d), ph = Math.round(h * d);
+        boolean wasHidden = pane.getVisibility() != View.VISIBLE;
+        lp.width = pw; lp.height = ph;
         pane.setLayoutParams(lp);
         pane.setVisibility(View.VISIBLE);
+        // 从藏着（新建时 0×0、或被浮层盖住时 GONE）变成显示：WebView 常常不重画，整块空白，要拖一下边缘改了尺寸才出来
+        // （群友 10-23 报）。照着那个绕法做：先少 1px 摆一帧，下一帧再摆回真尺寸，逼它重新布局、重建画面
+        if (wasHidden && ph > 1) {
+            lp.height = ph - 1;
+            pane.setLayoutParams(lp);
+            final BrowserPane p = pane;
+            pane.postDelayed(() -> {
+                if (pane != p) return;
+                FrameLayout.LayoutParams l2 = (FrameLayout.LayoutParams) p.getLayoutParams();
+                if (l2.height != ph - 1) return;   // 这期间页面又报了新位置，以那个为准
+                l2.height = ph;
+                p.setLayoutParams(l2);
+                p.web.invalidate();
+            }, 48);
+        }
     }
     /** 系统分享面板。正文太长会撑爆 Binder 事务（约 1 MB），截到 100k 字符 */
     private void shareTextNow(String text) {
@@ -1269,8 +1342,9 @@ public class MainActivity extends Activity {
         root.removeView(pane);
         pane.destroy();
         pane = null;
+        paneBox = null;
         paneCanBack = false;
-        if (fromPane && web != null) web.evaluateJavascript("window.__ccBrowserClosed&&__ccBrowserClosed()", null);
+        if (fromPane && web != null) web.evaluateJavascript(guarded("__ccBrowserClosed", "window.__ccBrowserClosed&&__ccBrowserClosed()"), null);
     }
     /** 返回手势要同步问"网页能不能后退"，JS 桥在别的线程上，这里定时把答案备好 */
     private void tickPaneBack() {
@@ -1335,7 +1409,7 @@ public class MainActivity extends Activity {
     @Override public void onBackPressed() {
         if (web == null) { moveTaskToBack(true); return; }
         // 先让页面关最上层的浮层（侧栏 / 查看器 / 终端 / 弹窗…，见 app.js __ccBack），都没开才退
-        web.evaluateJavascript("window.__ccBack?__ccBack():false", v -> {
+        web.evaluateJavascript(guarded("__ccBack", "window.__ccBack?__ccBack():false"), v -> {
             if ("true".equals(v)) return;
             // 不走 WebView 的历史：页面是单页（只用 replaceState），历史里只会有整页重载和冻结脱困跳出去的
             // 127.0.0.2:9 —— 退回去就是「找不到网页」，再退一次整页重载，看着像网关重建了（用户 10-22 报）

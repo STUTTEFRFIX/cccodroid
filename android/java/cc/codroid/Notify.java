@@ -151,6 +151,9 @@ final class Notify {
                 if ("hello".equals(type) || "state".equals(type)) onState(ev);
                 else if ("run_start".equals(type)) runText.put(ev.optString("runId"), ev.optString("text"));
                 else if ("run_end".equals(type)) onRunEnd(ev);
+                else if ("sched_note".equals(type)) onSchedNote(ev);
+                else if ("sched_next".equals(type)) SchedAlarm.set(ctx, ev.optLong("at"));
+                if ("hello".equals(type)) SchedAlarm.fromFile(ctx);   // 事件流（重）连上：按文件补定一次闹钟
             }
         } catch (Exception e) {
             Log.w(TAG, "通知：事件解析失败", e);
@@ -197,7 +200,8 @@ final class Notify {
         syncAsks();
         if (!doneRuns.add(runId)) return;
         if (doneRuns.size() > 200) doneRuns.clear();
-        // 网关自己发起的空闲压缩（auto=idle）不是用户等着的那一轮，不通知
+        // 网关自己发起的空闲压缩（auto=idle）不是用户等着的那一轮，不通知；定时任务按它自己的通知设置走 sched_note
+        if (ev.optBoolean("sched")) return;
         if (ev.optBoolean("aborted") || !ev.optString("auto").isEmpty() || MainActivity.visible || !doneOn()) return;
         boolean failed = ev.has("error") && !ev.isNull("error");
         String sid = sidOf(ev);
@@ -206,6 +210,21 @@ final class Notify {
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(failed ? Tr.t("出错了") : Tr.t("已完成"))
             .setContentText(clip(text == null || text.isEmpty() ? Tr.t("这一轮跑完了") : text, 80))
+            .setContentIntent(openIntent(sid, 0))
+            .setAutoCancel(true)
+            .build());
+    }
+
+    /** 定时任务跑完：网关已按任务的通知设置筛过（每次 / 只在失败 / 只在有发现），这里只管界面不在前台时发出来 */
+    private void onSchedNote(JSONObject ev) {
+        if (MainActivity.visible || !doneOn()) return;
+        String sid = ev.optString("sessionId");
+        String key = "sched:" + ev.optString("taskId");
+        nm.notify(TAG_DONE, key.hashCode(), new Notification.Builder(ctx, CH_DONE)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(clip(ev.optString("title"), 60))
+            .setContentText(clip(ev.optString("text"), 80))
+            .setStyle(new Notification.BigTextStyle().bigText(clip(ev.optString("text"), 400)))
             .setContentIntent(openIntent(sid, 0))
             .setAutoCancel(true)
             .build());
@@ -249,6 +268,20 @@ final class Notify {
         }
         b.addAction(new Notification.Action.Builder(null, Tr.t("打开查看"), openIntent(sidOf(p), 30000 + Math.abs(id.hashCode() % 10000))).build());
         return b.build();
+    }
+
+    /** 更新装完、界面没能自己回来（系统拦了后台启动）：发一条点开就回来的通知 */
+    static void updatedTapToOpen(Context c) {
+        Notify n = get(c);
+        String v = "";
+        try { v = c.getPackageManager().getPackageInfo(c.getPackageName(), 0).versionName; } catch (Exception ignored) {}
+        n.nm.notify(TAG_DONE, 0x5eed, new Notification.Builder(c, CH_DONE)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(Tr.f("cccodroid 已更新到 v{0}", v))
+            .setContentText(Tr.t("点此打开即可继续使用"))
+            .setContentIntent(n.openIntent("", 5))
+            .setAutoCancel(true)
+            .build());
     }
 
     /** 会话号：JSON 里是 null 时 optString 会给出字符串 "null"，要单独判 */

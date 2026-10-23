@@ -6,6 +6,7 @@ import { isLoginMode, learnWindow } from "./models.mjs";
 import { currentModelInfo } from "./claude.mjs";
 import { AUTH_CACHE, authStatus } from "./login.mjs";
 import { envFacts } from "./envfacts.mjs";
+import { publish } from "./bus.mjs";
 
 // ── 系统提示补充、claude 流事件翻译、订阅额度 ─────────────────────────
 /** 给 claude 的工具说明。两种布局装的东西不一样，各说各的，别把没有的命令告诉它 */
@@ -47,15 +48,15 @@ export function toolsHint() {
 
 /** result 事件里带了各模型的上下文窗口，取来给前端的用量条用。
  *  claude 报不出来时回落到 DeepSeek /models 给的真实窗口 —— 绝不写死数值。 */
-export function contextWindowOf(result) {
-  learnWindow(result);
+export function contextWindowOf(result, p, model) {
+  learnWindow(result, p);
   try {
     const mu = result.modelUsage || {};
     for (const k of Object.keys(mu)) {
       if (mu[k] && mu[k].contextWindow) return mu[k].contextWindow;
     }
   } catch {}
-  return Number(currentModelInfo().context_window) || 0;
+  return Number(currentModelInfo(model, p).context_window) || 0;
 }
 
 /** 生效的自动压缩窗口。
@@ -81,7 +82,7 @@ export const promptTokens = (u) => u
   : 0;
 
 /** 把 claude 的 stream-json 事件翻译成前端事件 */
-export function translate(ev, { sse, onInit, onResult, onReplay, flags }) {
+export function translate(ev, { sse, onInit, onResult, onReplay, flags, provider }) {
   if (!ev || typeof ev !== "object") return;
   switch (ev.type) {
     case "system":
@@ -206,7 +207,7 @@ export function translate(ev, { sse, onInit, onResult, onReplay, flags }) {
       break;
 
     case "rate_limit_event":
-      noteRateLimit(ev.rate_limit_info);
+      noteRateLimit(ev.rate_limit_info, provider);
       break;
 
     default:
@@ -221,9 +222,9 @@ export function translate(ev, { sse, onInit, onResult, onReplay, flags }) {
 const RL_FILE = path.join(CFG.home, ".cache", "ccapp-ratelimits.json");
 export let RATE_LIMITS = (() => { try { return JSON.parse(fs.readFileSync(RL_FILE, "utf8")); } catch { return null; } })();
 export function clearRateLimits() { RATE_LIMITS = null; try { fs.unlinkSync(RL_FILE); } catch {} }
-function noteRateLimit(info) {
+function noteRateLimit(info, p) {
   const w = info && info.unifiedWindows;
-  if (!w || !isLoginMode()) return;
+  if (!w || !isLoginMode(p)) return;    // 这一轮用的是登录态那家才记（全局可能是别家）
   const win = (x) => x && Number.isFinite(+x.utilization)
     ? { used: +x.utilization <= 1 ? Math.round(+x.utilization * 1000) / 10 : +x.utilization, resetsAt: x.resetsAt || null }
     : null;
@@ -234,6 +235,7 @@ function noteRateLimit(info) {
     fiveHour: win(w.five_hour), sevenDay: win(w.seven_day),
   };
   saveRateLimits();
+  publish({ type: "quota" });       // 前端看得见额度的地方即时重画，不用切页面
   // 账户缓存是冷的就补查一次，把这份额度钉到账户上（换账户后不显示旧数）
   if (!RATE_LIMITS.email) authStatus().then((v) => { if (RATE_LIMITS && v.email) { RATE_LIMITS.email = v.email; saveRateLimits(); } }).catch(() => {});
 }

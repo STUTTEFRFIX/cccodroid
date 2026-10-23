@@ -3,13 +3,26 @@ import { SETTINGS, saveSettings } from "./settings.mjs";
 import { PROVIDER } from "./providers.mjs";
 import { effortLevelsOf, fetchModels, normEffort } from "./models.mjs";
 import { effectiveAutoCompact } from "./stream.mjs";
+import { effectiveModel, sessProvider, setSessModel } from "./sessmodel.mjs";
 
 // ── /model 与 /effort：由网关本地处理 ─────────────────────────────────
 // 为什么不让 claude 自己处理：它自带的 /model 只改「当前会话」，
-// 而 GUI 每次调用都是新进程 —— 下一条消息就忘了。只有落到 SETTINGS 才持久。
-export async function handleLocalCommand(name, arg, reply) {
-  const models = await fetchModels(true);
-  const cur = models.find((m) => m.id === SETTINGS.model) || models[0];
+// 而 GUI 每次调用都是新进程 —— 下一条消息就忘了。所以由网关记：
+// 0.3.16 起：在会话里打 → 只改这个会话（sid）；新会话里打（还没会话号）→ 改全局默认。
+export async function handleLocalCommand(name, arg, reply, sid) {
+  // 会话钉在别家时，清单、档位、校验都按那家
+  const P = sid ? sessProvider(sid) : PROVIDER;
+  const models = await fetchModels(true, P);
+  const now = effectiveModel(sid);
+  const curId = now.model, curEff = now.effort;
+  const cur = models.find((m) => m.id === curId) || models[0];
+  const commit = (patch) => {
+    if (sid) return setSessModel(sid, patch);
+    if (patch.model !== undefined) SETTINGS.model = patch.model || null;
+    if (patch.effort !== undefined) SETTINGS.effort = patch.effort || null;
+    saveSettings();
+  };
+  const scope = sid ? "（只改这个会话）" : "（改的是全局默认）";
 
   // ── /autocompact ──
   // 交给 claude 自己处理的话：它写进 ~/.claude/settings.json，但我们下发的 CLAUDE_CODE_AUTO_COMPACT_WINDOW
@@ -39,7 +52,7 @@ export async function handleLocalCommand(name, arg, reply) {
     log(`⌘ /autocompact → ${n || "(默认)"}`);
     return reply(
       (n ? `自动压缩线已设为 **${fmt(n)} tokens**，下一轮起生效。` : "自动压缩线已恢复默认（由 claude 按模型窗口决定），下一轮起生效。") +
-      (n && win && n > win ? `\n\n> ⚠️ 比当前模型的窗口（${fmt(win)}）还大，实际会先撞上窗口上限。` : ""),
+      (n && win && n > win ? `\n\n> **注意**：比当前模型的窗口（${fmt(win)}）还大，实际会先撞上窗口上限。` : ""),
       "autocompact"
     );
   }
@@ -50,24 +63,24 @@ export async function handleLocalCommand(name, arg, reply) {
       // 原生厂商（claude 自己认识模型）：不列清单，也不劝你手选
       if (!models.length) {
         return reply(
-          `当前厂商：**${PROVIDER.label || PROVIDER.id}**（claude 原生）\n\n` +
+          `当前厂商：**${P.label || P.id}**（claude 原生）\n\n` +
           `> 该厂商由 claude 自己决定模型，未提供可切换的模型清单 —— \`/model\` 在此不适用。\n` +
           `> 若要指定，可直接写进 \`ccapp-providers.json\` 的 \`defaultModel\`。`,
           "model"
         );
       }
       const lines = models.map((m) => {
-        const on = m.id === SETTINGS.model ? "**▸** " : "　　";
+        const on = m.id === curId ? "**▸** " : "　　";
         const img = (m.input_modalities || []).includes("image") ? " · 支持图片" : "";
         const eff = (m.effort?.supported_levels || []).join(" / ");
         return `${on}\`${m.id}\` — ${m.name || ""}\n　　上下文 ${Math.round((m.context_window || 0) / 1024)}k${img} · effort ${eff}`;
       }).join("\n\n");
       return reply(
-        `当前厂商：**${PROVIDER.label || PROVIDER.id}**\n` +
-        `当前模型：**${SETTINGS.model || "(由 claude 决定)"}**　（effort **${SETTINGS.effort || "默认"}**）\n\n` +
+        `当前厂商：**${P.label || P.id}**\n` +
+        `当前模型：**${curId || "(由 claude 决定)"}**　（effort **${curEff || "默认"}**）\n\n` +
         `可用模型：\n\n${lines}\n\n` +
         `用法：\`/model <id>\`　切换思考强度：\`/effort\`\n\n` +
-        (PROVIDER.nativeModels
+        (P.nativeModels
           ? `> 模型名由 claude 自己解析，写错会直接报错。`
           : `> 第三方厂商对不认识的名字**可能静默回落**，所以这里挡一道，免得你以为切成功了。`),
         "model"
@@ -80,42 +93,40 @@ export async function handleLocalCommand(name, arg, reply) {
     if (!target) {
       if (!models.length) {
         return reply(
-          `当前厂商（**${PROVIDER.label || PROVIDER.id}**）未提供模型清单，\`/model\` 不适用。\n` +
+          `当前厂商（**${P.label || P.id}**）未提供模型清单，\`/model\` 不适用。\n` +
           `> 原生厂商由 claude 自己决定模型；要指定就改 \`ccapp-providers.json\` 的 \`defaultModel\`。`,
           "model"
         );
       }
       return reply(
         `没有模型 \`${arg}\`。\n\n可用：${models.map((m) => "`" + m.id + "`").join("、")}\n\n` +
-        `（${PROVIDER.label || PROVIDER.id} 收到不认识的名字可能静默回落，所以这里挡住，免得你以为切成功了）`,
+        `（${P.label || P.id} 收到不认识的名字可能静默回落，所以这里挡住，免得你以为切成功了）`,
         "model"
       );
     }
-    SETTINGS.model = target.id;
-    const eff = normEffort(target, SETTINGS.effort);
-    const effChanged = eff !== SETTINGS.effort;
-    SETTINGS.effort = eff;
-    saveSettings();
+    const eff = normEffort(target, curEff, P);
+    const effChanged = eff !== curEff;
+    commit({ model: target.id, effort: eff || "" });
     return reply(
       `已切换到 **${target.id}**${target.name ? "（" + target.name + "）" : ""}\n\n` +
       `- 上下文窗口：${Math.round((target.context_window || 0) / 1024)}k\n` +
       `- 输入模态：${(target.input_modalities || []).join(" / ")}\n` +
       `- effort 档位：${(target.effort?.supported_levels || []).join(" / ")}\n` +
-      (effChanged ? `- ⚠️ 原 effort 该模型不支持，已调为 \`${eff}\`\n` : "") +
-      `\n下一条消息生效。`,
+      (effChanged ? `- **注意**：原 effort 该模型不支持，已调为 \`${eff}\`\n` : "") +
+      `\n下一条消息生效${scope}。`,
       "model"
     );
   }
 
   // ── /effort ──
   if (name === "effort") {
-    const levels = effortLevelsOf(cur);
+    const levels = effortLevelsOf(cur, P);
     const dflt = cur && cur.effort && cur.effort.default_level;
     if (!arg) {
       const lines = levels.map((l) =>
-        `${l === SETTINGS.effort ? "**▸** " : "　　"}\`${l}\`` + (l === dflt ? "　（模型默认）" : "")).join("\n");
+        `${l === curEff ? "**▸** " : "　　"}\`${l}\`` + (l === dflt ? "　（模型默认）" : "")).join("\n");
       return reply(
-        `当前模型 **${SETTINGS.model || "默认"}** 的思考强度：**${SETTINGS.effort || "(未设置)"}**\n\n${lines}\n\n` +
+        `当前模型 **${curId || "默认"}** 的思考强度：**${curEff || "(未设置)"}**\n\n${lines}\n\n` +
         `用法：\`/effort <level>\`\n\n` +
         `> 档位越高思考越久、通常质量越好。实测首字延迟：\`low\` ≈ 0.9s，\`max\` ≈ 2.3s。`,
         "effort"
@@ -123,19 +134,17 @@ export async function handleLocalCommand(name, arg, reply) {
     }
     const t = arg.toLowerCase().trim();
     if (levels.includes(t)) {
-      SETTINGS.effort = t;
-      saveSettings();
-      return reply(`思考强度已设为 **${t}**（模型 ${SETTINGS.model || "默认"}）。\n\n下一条消息生效。`, "effort");
+      commit({ effort: t });
+      return reply(`思考强度已设为 **${t}**（模型 ${curId || "默认"}）。\n\n下一条消息生效${scope}。`, "effort");
     }
     // claude 认 low/medium/high/xhigh/max，DeepSeek 只有 low/high/max，做个就近映射
     const alias = { medium: "high", xhigh: "max", highest: "max", lowest: "low", normal: "high" }[t];
     if (alias && levels.includes(alias)) {
-      SETTINGS.effort = alias;
-      saveSettings();
-      return reply(`\`${arg}\` 不是 ${SETTINGS.model} 的档位，已就近设为 **${alias}**。\n\n` +
+      commit({ effort: alias });
+      return reply(`\`${arg}\` 不是 ${curId} 的档位，已就近设为 **${alias}**。\n\n` +
         `该模型支持：${levels.map((l) => "`" + l + "`").join("、")}`, "effort");
     }
-    return reply(`\`${arg}\` 不是有效档位。**${SETTINGS.model || "默认模型"}** 支持：${levels.map((l) => "`" + l + "`").join("、")}`, "effort");
+    return reply(`\`${arg}\` 不是有效档位。**${curId || "默认模型"}** 支持：${levels.map((l) => "`" + l + "`").join("、")}`, "effort");
   }
 
   return reply(`未知命令 /${name}`, name);
